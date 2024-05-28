@@ -1,10 +1,8 @@
-use fixedbitset::*;
-
+use fixedbitset::{on_stack::FixedBitSet, Block, SimdBlock};
 #[cfg(target_family = "wasm")]
 use wasm_bindgen_test::*;
 #[cfg(target_family = "wasm")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
-
 extern crate alloc;
 
 const BITS: usize = core::mem::size_of::<Block>() * 8;
@@ -13,10 +11,11 @@ const BITS: usize = core::mem::size_of::<Block>() * 8;
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn it_works() {
     const N: usize = 50;
-    let mut fb = FixedBitSet::with_capacity(N);
+    const NBLOCK: usize = N / SimdBlock::BITS + 1;
+    let mut fb: FixedBitSet<NBLOCK> = FixedBitSet::with_capacity(N);
 
     for i in 0..(N + 10) {
-        assert_eq!(fb.contains(i), false);
+        assert!(!fb.contains(i));
     }
 
     fb.insert(10);
@@ -40,7 +39,9 @@ fn it_works() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn with_blocks() {
-    let fb = FixedBitSet::with_capacity_and_blocks(50, vec![8, 0]);
+    const N: usize = 50;
+    const NBLOCK: usize = N / SimdBlock::BITS + 1;
+    let fb: FixedBitSet<NBLOCK> = FixedBitSet::with_capacity_and_blocks(N, vec![8, 0]);
     assert!(fb.contains(3));
 
     let ones: Vec<_> = fb.ones().collect();
@@ -56,7 +57,9 @@ fn with_blocks() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn with_blocks_too_small() {
-    let mut fb = FixedBitSet::with_capacity_and_blocks(500, vec![8, 0]);
+    const N: usize = 500;
+    const NBLOCK: usize = N / SimdBlock::BITS + 1;
+    let mut fb: FixedBitSet<NBLOCK> = FixedBitSet::with_capacity_and_blocks(N, vec![8, 0]);
     fb.insert(400);
     assert!(fb.contains(400));
 }
@@ -64,7 +67,9 @@ fn with_blocks_too_small() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn with_blocks_too_big() {
-    let fb = FixedBitSet::with_capacity_and_blocks(1, vec![8]);
+    const N: usize = 1;
+    const NBLOCK: usize = N / SimdBlock::BITS + 1;
+    let fb: FixedBitSet<NBLOCK> = FixedBitSet::with_capacity_and_blocks(N, vec![8]);
 
     // since capacity is 1, 3 shouldn't be set here
     assert!(!fb.contains(3));
@@ -73,7 +78,9 @@ fn with_blocks_too_big() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn with_blocks_too_big_range_check() {
-    let fb = FixedBitSet::with_capacity_and_blocks(1, vec![0xff]);
+    const N: usize = 1;
+    const NBLOCK: usize = N / SimdBlock::BITS + 1;
+    let fb: FixedBitSet<NBLOCK> = FixedBitSet::with_capacity_and_blocks(N, vec![0xff]);
 
     // since capacity is 1, only 0 should be set
     assert!(fb.contains(0));
@@ -85,7 +92,9 @@ fn with_blocks_too_big_range_check() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn grow() {
-    let mut fb = FixedBitSet::with_capacity(48);
+    const N: usize = 48;
+    const NBLOCK: usize = N / SimdBlock::BITS + 1;
+    let mut fb: FixedBitSet<NBLOCK> = FixedBitSet::with_capacity(48);
     for i in 0..fb.len() {
         fb.set(i, true);
     }
@@ -102,7 +111,7 @@ fn grow() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn grow_and_insert() {
-    let mut fb = FixedBitSet::default();
+    let mut fb: FixedBitSet<10> = FixedBitSet::default();
     for i in 0..100 {
         if i % 3 == 0 {
             fb.grow_and_insert(i);
@@ -115,7 +124,7 @@ fn grow_and_insert() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn test_toggle() {
-    let mut fb = FixedBitSet::with_capacity(16);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(16);
     fb.toggle(1);
     fb.put(2);
     fb.toggle(2);
@@ -128,7 +137,7 @@ fn test_toggle() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn copy_bit() {
-    let mut fb = FixedBitSet::with_capacity(48);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(48);
     for i in 0..fb.len() {
         fb.set(i, true);
     }
@@ -146,7 +155,7 @@ fn copy_bit() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn count_ones() {
-    let mut fb = FixedBitSet::with_capacity(100);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(100);
     fb.set(11, true);
     fb.set(12, true);
     fb.set(7, true);
@@ -180,7 +189,7 @@ fn count_ones() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn count_zeroes() {
-    let mut fb = FixedBitSet::with_capacity(100);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(100);
     fb.set(11, true);
     fb.set(12, true);
     fb.set(7, true);
@@ -214,7 +223,7 @@ fn count_zeroes() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn minimum() {
-    let mut fb = FixedBitSet::with_capacity(100);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(100);
     assert_eq!(fb.minimum(), None);
     fb.set(95, true);
     assert_eq!(fb.minimum(), Some(95));
@@ -241,7 +250,7 @@ fn minimum() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn maximum() {
-    let mut fb = FixedBitSet::with_capacity(100);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(100);
     assert_eq!(fb.maximum(), None);
     fb.set(11, true);
     assert_eq!(fb.maximum(), Some(11));
@@ -305,7 +314,7 @@ impl<I: Iterator + DoubleEndedIterator> AlternatingExt for I {}
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn ones() {
-    let mut fb = FixedBitSet::with_capacity(100);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(100);
     fb.set(11, true);
     fb.set(12, true);
     fb.set(7, true);
@@ -332,7 +341,7 @@ fn ones() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn into_ones() {
-    fn create() -> FixedBitSet {
+    fn create() -> FixedBitSet<2> {
         let mut fb = FixedBitSet::with_capacity(100);
         fb.set(11, true);
         fb.set(12, true);
@@ -364,7 +373,7 @@ fn into_ones() {
 fn size_hint() {
     let iters = if cfg!(miri) { 250 } else { 1000 };
     for s in 0..iters {
-        let mut bitset = FixedBitSet::with_capacity(s);
+        let mut bitset: FixedBitSet<16> = FixedBitSet::with_capacity(s);
         bitset.insert_range(..);
         let mut t = s;
         let mut iter = bitset.ones().rev();
@@ -388,7 +397,7 @@ fn size_hint() {
 fn size_hint_alternate() {
     let iters = if cfg!(miri) { 250 } else { 1000 };
     for s in 0..iters {
-        let mut bitset = FixedBitSet::with_capacity(s);
+        let mut bitset: FixedBitSet<16> = FixedBitSet::with_capacity(s);
         bitset.insert_range(..);
         let mut t = s;
         extern crate std;
@@ -412,7 +421,7 @@ fn size_hint_alternate() {
 fn iter_ones_range() {
     fn test_range(from: usize, to: usize, capa: usize) {
         assert!(to <= capa);
-        let mut fb = FixedBitSet::with_capacity(capa);
+        let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(capa);
         for i in from..to {
             fb.insert(i);
         }
@@ -437,7 +446,7 @@ fn iter_ones_range() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn count_ones_oob() {
-    let fb = FixedBitSet::with_capacity(100);
+    let fb: FixedBitSet<2> = FixedBitSet::with_capacity(100);
     fb.count_ones(90..101);
 }
 
@@ -446,7 +455,7 @@ fn count_ones_oob() {
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 #[allow(clippy::reversed_empty_ranges)]
 fn count_ones_negative_range() {
-    let fb = FixedBitSet::with_capacity(100);
+    let fb: FixedBitSet<2> = FixedBitSet::with_capacity(100);
     fb.count_ones(90..80);
 }
 
@@ -455,7 +464,7 @@ fn count_ones_negative_range() {
 fn count_ones_panic() {
     let iters = if cfg!(miri) { 48 } else { 128 };
     for i in 1..iters {
-        let fb = FixedBitSet::with_capacity(i);
+        let fb: FixedBitSet<2> = FixedBitSet::with_capacity(i);
         for j in 0..fb.len() + 1 {
             for k in j..fb.len() + 1 {
                 assert_eq!(fb.count_ones(j..k), 0);
@@ -467,14 +476,14 @@ fn count_ones_panic() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn default() {
-    let fb = FixedBitSet::default();
+    let fb: FixedBitSet<2> = FixedBitSet::default();
     assert_eq!(fb.len(), 0);
 }
 
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn insert_range() {
-    let mut fb = FixedBitSet::with_capacity(97);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(97);
     fb.insert_range(..3);
     fb.insert_range(9..32);
     fb.insert_range(37..81);
@@ -493,7 +502,7 @@ fn insert_range() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn contains_all_in_range() {
-    let mut fb = FixedBitSet::with_capacity(48);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(48);
     fb.insert_range(..);
 
     fb.remove_range(..32);
@@ -509,7 +518,7 @@ fn contains_all_in_range() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn contains_any_in_range() {
-    let mut fb = FixedBitSet::with_capacity(48);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(48);
     fb.insert_range(..);
 
     fb.remove_range(..32);
@@ -527,7 +536,7 @@ fn contains_any_in_range() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn remove_range() {
-    let mut fb = FixedBitSet::with_capacity(48);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(48);
     fb.insert_range(..);
 
     fb.remove_range(..32);
@@ -541,7 +550,7 @@ fn remove_range() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn set_range() {
-    let mut fb = FixedBitSet::with_capacity(48);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(48);
     fb.insert_range(..);
 
     fb.set_range(..32, false);
@@ -559,7 +568,7 @@ fn set_range() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn toggle_range() {
-    let mut fb = FixedBitSet::with_capacity(40);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(40);
     fb.insert_range(..10);
     fb.insert_range(34..38);
 
@@ -582,8 +591,8 @@ fn bitand_equal_lengths() {
     let len = 109;
     let a_end = 59;
     let b_start = 23;
-    let mut a = FixedBitSet::with_capacity(len);
-    let mut b = FixedBitSet::with_capacity(len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(len);
+    let mut b: FixedBitSet<2> = FixedBitSet::with_capacity(len);
     a.set_range(..a_end, true);
     b.set_range(b_start.., true);
     let ab = &a & &b;
@@ -607,8 +616,8 @@ fn bitand_first_smaller() {
     let len = core::cmp::min(a_len, b_len);
     let a_end = 97;
     let b_start = 89;
-    let mut a = FixedBitSet::with_capacity(a_len);
-    let mut b = FixedBitSet::with_capacity(b_len);
+    let mut a: FixedBitSet<4> = FixedBitSet::with_capacity(a_len);
+    let mut b: FixedBitSet<4> = FixedBitSet::with_capacity(b_len);
     a.set_range(..a_end, true);
     b.set_range(b_start.., true);
     let ab = &a & &b;
@@ -632,8 +641,8 @@ fn bitand_first_larger() {
     let len = core::cmp::min(a_len, b_len);
     let a_end = 107;
     let b_start = 43;
-    let mut a = FixedBitSet::with_capacity(a_len);
-    let mut b = FixedBitSet::with_capacity(b_len);
+    let mut a: FixedBitSet<4> = FixedBitSet::with_capacity(a_len);
+    let mut b: FixedBitSet<4> = FixedBitSet::with_capacity(b_len);
     a.set_range(..a_end, true);
     b.set_range(b_start.., true);
     let ab = &a & &b;
@@ -661,7 +670,7 @@ fn intersection() {
     b.set_range(b_start.., true);
     let count = a.intersection_count(&b);
     let iterator_count = a.intersection(&b).count();
-    let mut ab = a.intersection(&b).collect::<FixedBitSet>();
+    let mut ab = a.intersection(&b).collect::<FixedBitSet<2>>();
 
     for i in 0..b_start {
         assert!(!ab.contains(i));
@@ -704,7 +713,7 @@ fn union() {
     b.set_range(..b_end, true);
     let count = a.union_count(&b);
     let iterator_count = a.union(&b).count();
-    let ab = a.union(&b).collect::<FixedBitSet>();
+    let ab = a.union(&b).collect::<FixedBitSet<3>>();
     for i in a_start..a_len {
         assert!(ab.contains(i));
     }
@@ -742,7 +751,7 @@ fn difference() {
     b.set_range(b_start..b_len, true);
     let count = a.difference_count(&b);
     let iterator_count = a.difference(&b).count();
-    let mut a_diff_b = a.difference(&b).collect::<FixedBitSet>();
+    let mut a_diff_b = a.difference(&b).collect::<FixedBitSet<3>>();
     for i in a_start..b_start {
         assert!(a_diff_b.contains(i));
     }
@@ -782,7 +791,7 @@ fn symmetric_difference() {
     b.set_range(b_start..b_len, true);
     let count = a.symmetric_difference_count(&b);
     let iterator_count = a.symmetric_difference(&b).count();
-    let a_sym_diff_b = a.symmetric_difference(&b).collect::<FixedBitSet>();
+    let a_sym_diff_b = a.symmetric_difference(&b).collect::<FixedBitSet<3>>();
     for i in 0..a_start {
         assert!(!a_sym_diff_b.contains(i));
     }
@@ -820,7 +829,7 @@ fn bitor_equal_lengths() {
     let a_end = 23;
     let b_start = 19;
     let b_end = 59;
-    let mut a = FixedBitSet::with_capacity(len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(len);
     let mut b = FixedBitSet::with_capacity(len);
     a.set_range(a_start..a_end, true);
     b.set_range(b_start..b_end, true);
@@ -844,7 +853,7 @@ fn bitor_first_smaller() {
     let b_len = 137;
     let a_end = 89;
     let b_start = 97;
-    let mut a = FixedBitSet::with_capacity(a_len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(a_len);
     let mut b = FixedBitSet::with_capacity(b_len);
     a.set_range(..a_end, true);
     b.set_range(b_start.., true);
@@ -868,7 +877,7 @@ fn bitor_first_larger() {
     let b_len = 137;
     let a_start = 139;
     let b_end = 107;
-    let mut a = FixedBitSet::with_capacity(a_len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(a_len);
     let mut b = FixedBitSet::with_capacity(b_len);
     a.set_range(a_start.., true);
     b.set_range(..b_end, true);
@@ -891,7 +900,7 @@ fn bitxor_equal_lengths() {
     let len = 109;
     let a_end = 59;
     let b_start = 23;
-    let mut a = FixedBitSet::with_capacity(len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(len);
     let mut b = FixedBitSet::with_capacity(len);
     a.set_range(..a_end, true);
     b.set_range(b_start.., true);
@@ -916,7 +925,7 @@ fn bitxor_first_smaller() {
     let len = core::cmp::max(a_len, b_len);
     let a_end = 97;
     let b_start = 89;
-    let mut a = FixedBitSet::with_capacity(a_len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(a_len);
     let mut b = FixedBitSet::with_capacity(b_len);
     a.set_range(..a_end, true);
     b.set_range(b_start.., true);
@@ -941,7 +950,7 @@ fn bitxor_first_larger() {
     let len = core::cmp::max(a_len, b_len);
     let a_end = 107;
     let b_start = 43;
-    let mut a = FixedBitSet::with_capacity(a_len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(a_len);
     let mut b = FixedBitSet::with_capacity(b_len);
     a.set_range(..a_end, true);
     b.set_range(b_start.., true);
@@ -967,8 +976,8 @@ fn bitand_assign_shorter() {
     let a_ones: Vec<usize> = vec![2, 3, 7, 19, 31, 32, 37, 41, 43, 47, 71, 73, 101];
     let b_ones: Vec<usize> = vec![2, 7, 8, 11, 23, 31, 32];
     let a_and_b: Vec<usize> = vec![2, 7, 31, 32];
-    let mut a = a_ones.iter().cloned().collect::<FixedBitSet>();
-    let b = b_ones.iter().cloned().collect::<FixedBitSet>();
+    let mut a = a_ones.iter().cloned().collect::<FixedBitSet<2>>();
+    let b = b_ones.iter().cloned().collect::<FixedBitSet<2>>();
     a &= b;
     let res = a.ones().collect::<Vec<usize>>();
 
@@ -981,8 +990,8 @@ fn bitand_assign_longer() {
     let a_ones: Vec<usize> = vec![2, 7, 8, 11, 23, 31, 32];
     let b_ones: Vec<usize> = vec![2, 3, 7, 19, 31, 32, 37, 41, 43, 47, 71, 73, 101];
     let a_and_b: Vec<usize> = vec![2, 7, 31, 32];
-    let mut a = a_ones.iter().cloned().collect::<FixedBitSet>();
-    let b = b_ones.iter().cloned().collect::<FixedBitSet>();
+    let mut a = a_ones.iter().cloned().collect::<FixedBitSet<2>>();
+    let b = b_ones.iter().cloned().collect::<FixedBitSet<2>>();
     a &= b;
     let res = a.ones().collect::<Vec<usize>>();
     assert!(res == a_and_b);
@@ -994,8 +1003,8 @@ fn bitor_assign_shorter() {
     let a_ones: Vec<usize> = vec![2, 3, 7, 19, 31, 32, 37, 41, 43, 47, 71, 73, 101];
     let b_ones: Vec<usize> = vec![2, 7, 8, 11, 23, 31, 32];
     let a_or_b: Vec<usize> = vec![2, 3, 7, 8, 11, 19, 23, 31, 32, 37, 41, 43, 47, 71, 73, 101];
-    let mut a = a_ones.iter().cloned().collect::<FixedBitSet>();
-    let b = b_ones.iter().cloned().collect::<FixedBitSet>();
+    let mut a = a_ones.iter().cloned().collect::<FixedBitSet<2>>();
+    let b = b_ones.iter().cloned().collect::<FixedBitSet<2>>();
     a |= b;
     let res = a.ones().collect::<Vec<usize>>();
     assert!(res == a_or_b);
@@ -1007,8 +1016,8 @@ fn bitor_assign_longer() {
     let a_ones: Vec<usize> = vec![2, 7, 8, 11, 23, 31, 32];
     let b_ones: Vec<usize> = vec![2, 3, 7, 19, 31, 32, 37, 41, 43, 47, 71, 73, 101];
     let a_or_b: Vec<usize> = vec![2, 3, 7, 8, 11, 19, 23, 31, 32, 37, 41, 43, 47, 71, 73, 101];
-    let mut a = a_ones.iter().cloned().collect::<FixedBitSet>();
-    let b = b_ones.iter().cloned().collect::<FixedBitSet>();
+    let mut a = a_ones.iter().cloned().collect::<FixedBitSet<2>>();
+    let b = b_ones.iter().cloned().collect::<FixedBitSet<2>>();
     a |= b;
     let res = a.ones().collect::<Vec<usize>>();
     assert_eq!(res, a_or_b);
@@ -1020,8 +1029,8 @@ fn bitxor_assign_shorter() {
     let a_ones: Vec<usize> = vec![2, 3, 7, 19, 31, 32, 37, 41, 43, 47, 71, 73, 101];
     let b_ones: Vec<usize> = vec![2, 7, 8, 11, 23, 31, 32];
     let a_xor_b: Vec<usize> = vec![3, 8, 11, 19, 23, 37, 41, 43, 47, 71, 73, 101];
-    let mut a = a_ones.iter().cloned().collect::<FixedBitSet>();
-    let b = b_ones.iter().cloned().collect::<FixedBitSet>();
+    let mut a = a_ones.iter().cloned().collect::<FixedBitSet<2>>();
+    let b = b_ones.iter().cloned().collect::<FixedBitSet<2>>();
     a ^= b;
     let res = a.ones().collect::<Vec<usize>>();
     assert!(res == a_xor_b);
@@ -1033,17 +1042,19 @@ fn bitxor_assign_longer() {
     let a_ones: Vec<usize> = vec![2, 7, 8, 11, 23, 31, 32];
     let b_ones: Vec<usize> = vec![2, 3, 7, 19, 31, 32, 37, 41, 43, 47, 71, 73, 101];
     let a_xor_b: Vec<usize> = vec![3, 8, 11, 19, 23, 37, 41, 43, 47, 71, 73, 101];
-    let mut a = a_ones.iter().cloned().collect::<FixedBitSet>();
-    let b = b_ones.iter().cloned().collect::<FixedBitSet>();
+    let mut a = a_ones.iter().cloned().collect::<FixedBitSet<2>>();
+    let b = b_ones.iter().cloned().collect::<FixedBitSet<2>>();
     a ^= b;
     let res = a.ones().collect::<Vec<usize>>();
+    println!("{:?}", res);
+    println!("{:?}", a_xor_b);
     assert!(res == a_xor_b);
 }
 
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn op_assign_ref() {
-    let mut a = FixedBitSet::with_capacity(8);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(8);
     let b = FixedBitSet::with_capacity(8);
 
     //check that all assign type operators work on references
@@ -1057,8 +1068,8 @@ fn op_assign_ref() {
 fn subset_superset_shorter() {
     let a_ones: Vec<usize> = vec![7, 31, 32, 63];
     let b_ones: Vec<usize> = vec![2, 7, 19, 31, 32, 37, 41, 43, 47, 63, 73, 101];
-    let mut a = a_ones.iter().cloned().collect::<FixedBitSet>();
-    let b = b_ones.iter().cloned().collect::<FixedBitSet>();
+    let mut a = a_ones.iter().cloned().collect::<FixedBitSet<2>>();
+    let b = b_ones.iter().cloned().collect::<FixedBitSet<2>>();
     assert!(a.is_subset(&b) && b.is_superset(&a));
     a.insert(14);
     assert!(!a.is_subset(&b) && !b.is_superset(&a));
@@ -1071,7 +1082,7 @@ fn subset_superset_longer() {
     let b_len = 75;
     let a_ones: Vec<usize> = vec![7, 31, 32, 63];
     let b_ones: Vec<usize> = vec![2, 7, 19, 31, 32, 37, 41, 43, 47, 63, 73];
-    let mut a = FixedBitSet::with_capacity(a_len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(a_len);
     let mut b = FixedBitSet::with_capacity(b_len);
     a.extend(a_ones.iter().cloned());
     b.extend(b_ones.iter().cloned());
@@ -1087,7 +1098,7 @@ fn is_disjoint_first_shorter() {
     let b_len = 153;
     let a_ones: Vec<usize> = vec![2, 19, 32, 37, 41, 43, 47, 73];
     let b_ones: Vec<usize> = vec![7, 23, 31, 63, 124];
-    let mut a = FixedBitSet::with_capacity(a_len);
+    let mut a: FixedBitSet<2> = FixedBitSet::with_capacity(a_len);
     let mut b = FixedBitSet::with_capacity(b_len);
     a.extend(a_ones.iter().cloned());
     b.extend(b_ones.iter().cloned());
@@ -1101,8 +1112,8 @@ fn is_disjoint_first_shorter() {
 fn is_disjoint_first_longer() {
     let a_ones: Vec<usize> = vec![2, 19, 32, 37, 41, 43, 47, 73, 101];
     let b_ones: Vec<usize> = vec![7, 23, 31, 63];
-    let a = a_ones.iter().cloned().collect::<FixedBitSet>();
-    let mut b = b_ones.iter().cloned().collect::<FixedBitSet>();
+    let a = a_ones.iter().cloned().collect::<FixedBitSet<2>>();
+    let mut b = b_ones.iter().cloned().collect::<FixedBitSet<2>>();
     assert!(a.is_disjoint(&b));
     b.insert(2);
     assert!(!a.is_disjoint(&b));
@@ -1112,7 +1123,7 @@ fn is_disjoint_first_longer() {
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn extend_on_empty() {
     let items: Vec<usize> = vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 27, 29, 31, 37, 167];
-    let mut fbs = FixedBitSet::with_capacity(0);
+    let mut fbs: FixedBitSet<3> = FixedBitSet::with_capacity(0);
     fbs.extend(items.iter().cloned());
     let ones = fbs.ones().collect::<Vec<usize>>();
     assert!(ones == items);
@@ -1122,7 +1133,7 @@ fn extend_on_empty() {
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn extend() {
     let items: Vec<usize> = vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 27, 29, 31, 37, 167];
-    let mut fbs = FixedBitSet::with_capacity(168);
+    let mut fbs: FixedBitSet<3> = FixedBitSet::with_capacity(168);
     let new: Vec<usize> = vec![7, 37, 67, 137];
     for i in &new {
         fbs.put(*i);
@@ -1146,7 +1157,7 @@ fn extend() {
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn from_iterator() {
     let items: Vec<usize> = vec![0, 2, 4, 6, 8];
-    let fb = items.iter().cloned().collect::<FixedBitSet>();
+    let fb = items.iter().cloned().collect::<FixedBitSet<2>>();
     for i in items {
         assert!(fb.contains(i));
     }
@@ -1160,12 +1171,12 @@ fn from_iterator() {
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn from_iterator_ones() {
     let len = 257;
-    let mut fb = FixedBitSet::with_capacity(len);
+    let mut fb: FixedBitSet<5> = FixedBitSet::with_capacity(len);
     for i in (0..len).filter(|i| i % 7 == 0) {
         fb.put(i);
     }
     fb.put(len - 1);
-    let dup = fb.ones().collect::<FixedBitSet>();
+    let dup = fb.ones().collect::<FixedBitSet<5>>();
 
     assert_eq!(fb.len(), dup.len());
     assert_eq!(
@@ -1178,7 +1189,7 @@ fn from_iterator_ones() {
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn zeroes() {
     let len = 232;
-    let mut fb = FixedBitSet::with_capacity(len);
+    let mut fb: FixedBitSet<4> = FixedBitSet::with_capacity(len);
     for i in (0..len).filter(|i| i % 7 == 0) {
         fb.insert(i);
     }
@@ -1207,7 +1218,7 @@ fn zeroes() {
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn binary_trait() {
     let items: Vec<usize> = vec![1, 5, 7, 10, 14, 15];
-    let fb = items.iter().cloned().collect::<FixedBitSet>();
+    let fb = items.iter().cloned().collect::<FixedBitSet<2>>();
 
     assert_eq!(alloc::format!("{:b}", fb), "0100010100100011");
     assert_eq!(alloc::format!("{:#b}", fb), "0b0100010100100011");
@@ -1218,7 +1229,7 @@ fn binary_trait() {
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn display_trait() {
     let len = 8;
-    let mut fb = FixedBitSet::with_capacity(len);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(len);
 
     fb.put(4);
     fb.put(2);
@@ -1244,7 +1255,7 @@ fn test_serialize() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn test_is_clear() {
-    let mut fb = FixedBitSet::with_capacity(0);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(0);
     assert!(fb.is_clear());
 
     fb.grow(1);
@@ -1265,7 +1276,7 @@ fn test_is_clear() {
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn test_is_full() {
-    let mut fb = FixedBitSet::with_capacity(0);
+    let mut fb: FixedBitSet<2> = FixedBitSet::with_capacity(0);
     assert!(fb.is_full());
 
     fb.grow(1);
@@ -1288,7 +1299,7 @@ fn test_is_full() {
 
 #[test]
 fn clone() {
-    let mut fb = FixedBitSet::with_capacity(10000);
+    let mut fb: FixedBitSet<15626> = FixedBitSet::with_capacity(10000);
     fb.set(11, true);
     fb.set(12, true);
     fb.set(7, true);

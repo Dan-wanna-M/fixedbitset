@@ -13,16 +13,10 @@
 //! once they appear in stable Rust.
 //!
 //! Currently only SSE2/AVX/AVX2 on x86/x86_64 and wasm32 SIMD are supported as this is what stable Rust supports.
-#![no_std]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 extern crate alloc;
 use alloc::{vec, vec::Vec};
-
-mod block;
-mod range;
-pub mod on_stack;
-
 #[cfg(feature = "serde")]
 extern crate serde;
 #[cfg(feature = "serde")]
@@ -34,32 +28,20 @@ use core::fmt::{Binary, Display, Error, Formatter};
 use core::cmp::Ordering;
 use core::hash::Hash;
 use core::iter::{Chain, FusedIterator};
-use core::mem::ManuallyDrop;
-use core::mem::MaybeUninit;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Index};
-use core::ptr::NonNull;
-pub use range::IndexRange;
+
+use crate::{block, IndexRange};
 
 pub(crate) const BITS: usize = core::mem::size_of::<Block>() * 8;
 #[cfg(feature = "serde")]
 pub(crate) const BYTES: usize = core::mem::size_of::<Block>();
 
-pub use block::Block as SimdBlock;
+type SimdBlock = block::Block;
 pub type Block = usize;
 
 #[inline]
 fn div_rem(x: usize, denominator: usize) -> (usize, usize) {
     (x / denominator, x % denominator)
-}
-
-fn vec_into_parts<T>(vec: Vec<T>) -> (NonNull<T>, usize, usize) {
-    let mut vec = ManuallyDrop::new(vec);
-    (
-        // SAFETY: A Vec's internal pointer is always non-null.
-        unsafe { NonNull::new_unchecked(vec.as_mut_ptr()) },
-        vec.capacity(),
-        vec.len(),
-    )
 }
 
 /// `FixedBitSet` is a simple fixed size set of bits that each can
@@ -70,26 +52,19 @@ fn vec_into_parts<T>(vec: Vec<T>) -> (NonNull<T>, usize, usize) {
 ///
 /// Derived traits depend on both the zeros and ones, so [0,1] is not equal to
 /// [0,1,0].
+/// NBLOCK needs to be computed with div_rem(bits, SimdBlock::BITS)
 #[derive(Debug, Eq)]
-pub struct FixedBitSet {
-    pub(crate) data: NonNull<MaybeUninit<SimdBlock>>,
-    capacity: usize,
+pub struct FixedBitSet<const NBLOCK: usize> {
+    pub(crate) data: [SimdBlock; NBLOCK],
     /// length in bits
     pub(crate) length: usize,
 }
 
-// SAFETY: FixedBitset contains no thread-local state and can be safely sent between threads
-unsafe impl Send for FixedBitSet {}
-// SAFETY: FixedBitset does not provide simultaneous unsynchronized mutable access to the
-// underlying buffer.
-unsafe impl Sync for FixedBitSet {}
-
-impl FixedBitSet {
+impl<const NBLOCK: usize> FixedBitSet<NBLOCK> {
     /// Create a new empty **FixedBitSet**.
     pub const fn new() -> Self {
         FixedBitSet {
-            data: NonNull::dangling(),
-            capacity: 0,
+            data: [SimdBlock::NONE; NBLOCK],
             length: 0,
         }
     }
@@ -100,16 +75,6 @@ impl FixedBitSet {
         let (mut blocks, rem) = div_rem(bits, SimdBlock::BITS);
         blocks += (rem > 0) as usize;
         Self::from_blocks_and_len(vec![SimdBlock::NONE; blocks], bits)
-    }
-
-    #[inline]
-    fn from_blocks_and_len(data: Vec<SimdBlock>, length: usize) -> Self {
-        let (data, capacity, _) = vec_into_parts(data);
-        FixedBitSet {
-            data: data.cast(),
-            capacity,
-            length,
-        }
     }
 
     /// Create a new **FixedBitSet** with a specific number of bits,
@@ -125,47 +90,52 @@ impl FixedBitSet {
     /// let bs = fixedbitset::FixedBitSet::with_capacity_and_blocks(4, data);
     /// assert_eq!(format!("{:b}", bs), "0010");
     /// ```
-    pub fn with_capacity_and_blocks<I: IntoIterator<Item = Block>>(bits: usize, blocks: I) -> Self {
-        let mut bitset = Self::with_capacity(bits);
+    pub fn with_capacity_and_blocks<I: IntoIterator<Item = Block>>(
+        capacity: usize,
+        blocks: I,
+    ) -> Self {
+        let mut bitset = Self::with_capacity(capacity);
         for (subblock, value) in bitset.as_mut_slice().iter_mut().zip(blocks.into_iter()) {
             *subblock = value;
         }
         bitset
     }
 
-    /// Grow capacity to **bits**, all new bits initialized to zero
     #[inline]
     pub fn grow(&mut self, bits: usize) {
-        #[cold]
-        #[track_caller]
-        #[inline(never)]
-        fn do_grow(slf: &mut FixedBitSet, bits: usize) {
-            // SAFETY: The provided fill is initialized to NONE.
-            unsafe { slf.grow_inner(bits, MaybeUninit::new(SimdBlock::NONE)) };
+        let (mut blocks, rem) = div_rem(bits, SimdBlock::BITS);
+        blocks += (rem > 0) as usize;
+        if blocks > NBLOCK {
+            panic!("Cannot grow FixedBitSet beyond its capacity");
         }
+        self.length = bits;
+    }
 
-        if bits > self.length {
-            do_grow(self, bits);
+    #[inline]
+    fn from_blocks_and_len(data: Vec<SimdBlock>, length: usize) -> Self {
+        assert!(length <= NBLOCK * SimdBlock::BITS);
+        let mut new_data = [SimdBlock::NONE; NBLOCK];
+        new_data[..data.len()].copy_from_slice(&data);
+        FixedBitSet {
+            data: new_data,
+            length,
         }
     }
 
-    /// # Safety
-    /// If `fill` is uninitialized, the memory must not be accessed and must be immediately
-    /// written over
-    #[inline(always)]
-    unsafe fn grow_inner(&mut self, bits: usize, fill: MaybeUninit<SimdBlock>) {
-        // SAFETY: The data pointer and capacity were created from a Vec initially. The block
-        // len is identical to that of the original.
-        let mut data = unsafe {
-            Vec::from_raw_parts(self.data.as_ptr(), self.simd_block_len(), self.capacity)
-        };
-        let (mut blocks, rem) = div_rem(bits, SimdBlock::BITS);
-        blocks += (rem > 0) as usize;
-        data.resize(blocks, fill);
-        let (data, capacity, _) = vec_into_parts(data);
-        self.data = data;
-        self.capacity = capacity;
-        self.length = bits;
+    /// Grows the internal size of the bitset before inserting a bit
+    ///
+    /// Unlike `insert`, this cannot panic, but may allocate if the bit is outside of the existing buffer's range.
+    ///
+    /// This is faster than calling `grow` then `insert` in succession.
+    #[inline]
+    pub fn grow_and_insert(&mut self, bits: usize) {
+        self.grow(bits + 1);
+
+        let (blocks, rem) = div_rem(bits, BITS);
+        // SAFETY: The above grow ensures that the block is inside the Vec's allocation.
+        unsafe {
+            *self.get_unchecked_mut(blocks) |= 1 << rem;
+        }
     }
 
     #[inline]
@@ -175,7 +145,7 @@ impl FixedBitSet {
 
     #[inline]
     unsafe fn get_unchecked_mut(&mut self, subblock: usize) -> &mut Block {
-        &mut *self.data.as_ptr().cast::<Block>().add(subblock)
+        &mut *self.data.as_mut_ptr().cast::<Block>().add(subblock)
     }
 
     #[inline]
@@ -208,39 +178,10 @@ impl FixedBitSet {
     fn as_mut_simd_slice(&mut self) -> &mut [SimdBlock] {
         // SAFETY: The slice constructed is within bounds of the underlying allocation. This function
         // is called with a mutable borrow so no other read or write can happen as long as the returned borrow lives.
-        unsafe { core::slice::from_raw_parts_mut(self.data.as_ptr().cast(), self.simd_block_len()) }
-    }
-
-    #[inline]
-    fn as_simd_slice_uninit(&self) -> &[MaybeUninit<SimdBlock>] {
-        // SAFETY: The slice constructed is within bounds of the underlying allocation. This function
-        // is called with a read-only borrow so no other write can happen as long as the returned borrow lives.
-        unsafe { core::slice::from_raw_parts(self.data.as_ptr(), self.simd_block_len()) }
-    }
-
-    #[inline]
-    fn as_mut_simd_slice_uninit(&mut self) -> &mut [MaybeUninit<SimdBlock>] {
-        // SAFETY: The slice constructed is within bounds of the underlying allocation. This function
-        // is called with a mutable borrow so no other read or write can happen as long as the returned borrow lives.
-        unsafe { core::slice::from_raw_parts_mut(self.data.as_ptr(), self.simd_block_len()) }
-    }
-
-    /// Grows the internal size of the bitset before inserting a bit
-    ///
-    /// Unlike `insert`, this cannot panic, but may allocate if the bit is outside of the existing buffer's range.
-    ///
-    /// This is faster than calling `grow` then `insert` in succession.
-    #[inline]
-    pub fn grow_and_insert(&mut self, bits: usize) {
-        self.grow(bits + 1);
-
-        let (blocks, rem) = div_rem(bits, BITS);
-        // SAFETY: The above grow ensures that the block is inside the Vec's allocation.
         unsafe {
-            *self.get_unchecked_mut(blocks) |= 1 << rem;
+            core::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.simd_block_len())
         }
     }
-
     /// The length of the [`FixedBitSet`] in bits.
     ///
     /// Note: `len` includes both set and unset bits.
@@ -742,7 +683,7 @@ impl FixedBitSet {
         // of the underlying allocation. This function is called with a mutable borrow so
         // no other read or write can happen as long as the returned borrow lives.
         unsafe {
-            let ptr = self.data.as_ptr().cast::<Block>();
+            let ptr = self.data.as_mut_ptr().cast::<Block>();
             core::slice::from_raw_parts_mut(ptr, self.usize_len())
         }
     }
@@ -777,7 +718,7 @@ impl FixedBitSet {
     ///
     /// Iterator element is the index of the `1` bit, type `usize`.
     /// Unlike `ones`, this function consumes the `FixedBitset`.
-    pub fn into_ones(self) -> IntoOnes {
+    pub fn into_ones(self) -> IntoOnes<NBLOCK> {
         let ptr = self.data.as_ptr().cast();
         let len = self.simd_block_len() * SimdBlock::USIZE_COUNT;
         // SAFETY:
@@ -789,24 +730,14 @@ impl FixedBitSet {
         let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
         // SAFETY: The data pointer and capacity were created from a Vec initially. The block
         // len is identical to that of the original.
-        let data: Vec<SimdBlock> = unsafe {
-            Vec::from_raw_parts(
-                self.data.as_ptr().cast(),
-                self.simd_block_len(),
-                self.capacity,
-            )
-        };
         let mut iter = slice.iter().copied();
-
-        core::mem::forget(self);
-
         IntoOnes {
             bitset_front: iter.next().unwrap_or(0),
             bitset_back: iter.next_back().unwrap_or(0),
             block_idx_front: 0,
             block_idx_back: len.saturating_sub(1) * BITS,
             remaining_blocks: iter,
-            _buf: data,
+            _buf: self.data,
         }
     }
 
@@ -832,7 +763,7 @@ impl FixedBitSet {
     }
 
     /// Returns a lazy iterator over the intersection of two `FixedBitSet`s
-    pub fn intersection<'a>(&'a self, other: &'a FixedBitSet) -> Intersection<'a> {
+    pub fn intersection<'a>(&'a self, other: &'a FixedBitSet<NBLOCK>) -> Intersection<'a, NBLOCK> {
         Intersection {
             iter: self.ones(),
             other,
@@ -840,7 +771,7 @@ impl FixedBitSet {
     }
 
     /// Returns a lazy iterator over the union of two `FixedBitSet`s.
-    pub fn union<'a>(&'a self, other: &'a FixedBitSet) -> Union<'a> {
+    pub fn union<'a>(&'a self, other: &'a FixedBitSet<NBLOCK>) -> Union<'a, NBLOCK> {
         Union {
             iter: self.ones().chain(other.difference(self)),
         }
@@ -848,7 +779,7 @@ impl FixedBitSet {
 
     /// Returns a lazy iterator over the difference of two `FixedBitSet`s. The difference of `a`
     /// and `b` is the elements of `a` which are not in `b`.
-    pub fn difference<'a>(&'a self, other: &'a FixedBitSet) -> Difference<'a> {
+    pub fn difference<'a>(&'a self, other: &'a FixedBitSet<NBLOCK>) -> Difference<'a, NBLOCK> {
         Difference {
             iter: self.ones(),
             other,
@@ -857,7 +788,10 @@ impl FixedBitSet {
 
     /// Returns a lazy iterator over the symmetric difference of two `FixedBitSet`s.
     /// The symmetric difference of `a` and `b` is the elements of one, but not both, sets.
-    pub fn symmetric_difference<'a>(&'a self, other: &'a FixedBitSet) -> SymmetricDifference<'a> {
+    pub fn symmetric_difference<'a>(
+        &'a self,
+        other: &'a FixedBitSet<NBLOCK>,
+    ) -> SymmetricDifference<'a, NBLOCK> {
         SymmetricDifference {
             iter: self.difference(other).chain(other.difference(self)),
         }
@@ -866,7 +800,7 @@ impl FixedBitSet {
     /// In-place union of two `FixedBitSet`s.
     ///
     /// On calling this method, `self`'s capacity may be increased to match `other`'s.
-    pub fn union_with(&mut self, other: &FixedBitSet) {
+    pub fn union_with(&mut self, other: &FixedBitSet<NBLOCK>) {
         if other.len() >= self.len() {
             self.grow(other.len());
         }
@@ -879,7 +813,10 @@ impl FixedBitSet {
     /// In-place intersection of two `FixedBitSet`s.
     ///
     /// On calling this method, `self`'s capacity will remain the same as before.
-    pub fn intersect_with(&mut self, other: &FixedBitSet) {
+    pub fn intersect_with(&mut self, other: &FixedBitSet<NBLOCK>) {
+        if other.len() >= self.len() {
+            self.grow(other.len());
+        }
         let me = self.as_mut_simd_slice();
         let other = other.as_simd_slice();
         me.iter_mut().zip(other.iter()).for_each(|(x, y)| {
@@ -894,7 +831,10 @@ impl FixedBitSet {
     /// In-place difference of two `FixedBitSet`s.
     ///
     /// On calling this method, `self`'s capacity will remain the same as before.
-    pub fn difference_with(&mut self, other: &FixedBitSet) {
+    pub fn difference_with(&mut self, other: &FixedBitSet<NBLOCK>) {
+        if other.len() >= self.len() {
+            self.grow(other.len());
+        }
         self.as_mut_simd_slice()
             .iter_mut()
             .zip(other.as_simd_slice().iter())
@@ -913,7 +853,7 @@ impl FixedBitSet {
     /// In-place symmetric difference of two `FixedBitSet`s.
     ///
     /// On calling this method, `self`'s capacity may be increased to match `other`'s.
-    pub fn symmetric_difference_with(&mut self, other: &FixedBitSet) {
+    pub fn symmetric_difference_with(&mut self, other: &FixedBitSet<NBLOCK>) {
         if other.len() >= self.len() {
             self.grow(other.len());
         }
@@ -931,7 +871,7 @@ impl FixedBitSet {
     /// other methods like using [`union_with`] followed by [`count_ones`], this
     /// does not mutate in place or require separate allocations.
     #[inline]
-    pub fn union_count(&self, other: &FixedBitSet) -> usize {
+    pub fn union_count(&self, other: &FixedBitSet<NBLOCK>) -> usize {
         let me = self.as_slice();
         let other = other.as_slice();
         let count = Self::batch_count_ones(me.iter().zip(other.iter()).map(|(x, y)| (*x | *y)));
@@ -948,7 +888,7 @@ impl FixedBitSet {
     /// other methods like using [`intersect_with`] followed by [`count_ones`], this
     /// does not mutate in place or require separate allocations.
     #[inline]
-    pub fn intersection_count(&self, other: &FixedBitSet) -> usize {
+    pub fn intersection_count(&self, other: &FixedBitSet<NBLOCK>) -> usize {
         Self::batch_count_ones(
             self.as_slice()
                 .iter()
@@ -963,7 +903,7 @@ impl FixedBitSet {
     /// other methods like using [`difference_with`] followed by [`count_ones`], this
     /// does not mutate in place or require separate allocations.
     #[inline]
-    pub fn difference_count(&self, other: &FixedBitSet) -> usize {
+    pub fn difference_count(&self, other: &FixedBitSet<NBLOCK>) -> usize {
         Self::batch_count_ones(
             self.as_slice()
                 .iter()
@@ -978,7 +918,7 @@ impl FixedBitSet {
     /// other methods like using [`symmetric_difference_with`] followed by [`count_ones`], this
     /// does not mutate in place or require separate allocations.
     #[inline]
-    pub fn symmetric_difference_count(&self, other: &FixedBitSet) -> usize {
+    pub fn symmetric_difference_count(&self, other: &FixedBitSet<NBLOCK>) -> usize {
         let me = self.as_slice();
         let other = other.as_slice();
         let count = Self::batch_count_ones(me.iter().zip(other.iter()).map(|(x, y)| (*x ^ *y)));
@@ -991,7 +931,7 @@ impl FixedBitSet {
 
     /// Returns `true` if `self` has no elements in common with `other`. This
     /// is equivalent to checking for an empty intersection.
-    pub fn is_disjoint(&self, other: &FixedBitSet) -> bool {
+    pub fn is_disjoint(&self, other: &FixedBitSet<NBLOCK>) -> bool {
         self.as_simd_slice()
             .iter()
             .zip(other.as_simd_slice())
@@ -1000,7 +940,7 @@ impl FixedBitSet {
 
     /// Returns `true` if the set is a subset of another, i.e. `other` contains
     /// at least all the values in `self`.
-    pub fn is_subset(&self, other: &FixedBitSet) -> bool {
+    pub fn is_subset(&self, other: &FixedBitSet<NBLOCK>) -> bool {
         let me = self.as_simd_slice();
         let other = other.as_simd_slice();
         me.iter()
@@ -1011,31 +951,18 @@ impl FixedBitSet {
 
     /// Returns `true` if the set is a superset of another, i.e. `self` contains
     /// at least all the values in `other`.
-    pub fn is_superset(&self, other: &FixedBitSet) -> bool {
+    pub fn is_superset(&self, other: &FixedBitSet<NBLOCK>) -> bool {
         other.is_subset(self)
     }
 }
 
-impl Hash for FixedBitSet {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.length.hash(state);
-        self.as_simd_slice().hash(state);
-    }
-}
-
-impl PartialEq for FixedBitSet {
-    fn eq(&self, other: &Self) -> bool {
-        self.length == other.length && self.as_simd_slice().eq(other.as_simd_slice())
-    }
-}
-
-impl PartialOrd for FixedBitSet {
+impl<const NBLOCK: usize> PartialOrd for FixedBitSet<NBLOCK> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for FixedBitSet {
+impl<const NBLOCK: usize> Ord for FixedBitSet<NBLOCK> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.length
             .cmp(&other.length)
@@ -1043,23 +970,13 @@ impl Ord for FixedBitSet {
     }
 }
 
-impl Default for FixedBitSet {
+impl<const NBLOCK: usize> Default for FixedBitSet<NBLOCK> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Drop for FixedBitSet {
-    fn drop(&mut self) {
-        // SAFETY: The data pointer and capacity were created from a Vec initially. The block
-        // len is identical to that of the original.
-        drop(unsafe {
-            Vec::from_raw_parts(self.data.as_ptr(), self.simd_block_len(), self.capacity)
-        });
-    }
-}
-
-impl Binary for FixedBitSet {
+impl<const NBLOCK: usize> Binary for FixedBitSet<NBLOCK> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         if f.alternate() {
             f.write_str("0b")?;
@@ -1077,7 +994,7 @@ impl Binary for FixedBitSet {
     }
 }
 
-impl Display for FixedBitSet {
+impl<const NBLOCK: usize> Display for FixedBitSet<NBLOCK> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         Binary::fmt(&self, f)
     }
@@ -1085,13 +1002,13 @@ impl Display for FixedBitSet {
 
 /// An iterator producing elements in the difference of two sets.
 ///
-/// This struct is created by the [`FixedBitSet::difference`] method.
-pub struct Difference<'a> {
+/// This struct is created by the [`FixedBitSet<NBLOCK>::difference`] method.
+pub struct Difference<'a, const NBLOCK: usize> {
     iter: Ones<'a>,
-    other: &'a FixedBitSet,
+    other: &'a FixedBitSet<NBLOCK>,
 }
 
-impl<'a> Iterator for Difference<'a> {
+impl<'a, const NBLOCK: usize> Iterator for Difference<'a, NBLOCK> {
     type Item = usize;
 
     #[inline]
@@ -1105,7 +1022,7 @@ impl<'a> Iterator for Difference<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for Difference<'a> {
+impl<'a, const NBLOCK: usize> DoubleEndedIterator for Difference<'a, NBLOCK> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .by_ref()
@@ -1115,16 +1032,16 @@ impl<'a> DoubleEndedIterator for Difference<'a> {
 }
 
 // Difference will continue to return None once it first returns None.
-impl<'a> FusedIterator for Difference<'a> {}
+impl<'a, const NBLOCK: usize> FusedIterator for Difference<'a, NBLOCK> {}
 
 /// An iterator producing elements in the symmetric difference of two sets.
 ///
-/// This struct is created by the [`FixedBitSet::symmetric_difference`] method.
-pub struct SymmetricDifference<'a> {
-    iter: Chain<Difference<'a>, Difference<'a>>,
+/// This struct is created by the [`FixedBitSet<NBLOCK>::symmetric_difference`] method.
+pub struct SymmetricDifference<'a, const NBLOCK: usize> {
+    iter: Chain<Difference<'a, NBLOCK>, Difference<'a, NBLOCK>>,
 }
 
-impl<'a> Iterator for SymmetricDifference<'a> {
+impl<'a, const NBLOCK: usize> Iterator for SymmetricDifference<'a, NBLOCK> {
     type Item = usize;
 
     #[inline]
@@ -1138,24 +1055,24 @@ impl<'a> Iterator for SymmetricDifference<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for SymmetricDifference<'a> {
+impl<'a, const NBLOCK: usize> DoubleEndedIterator for SymmetricDifference<'a, NBLOCK> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter.next_back()
     }
 }
 
 // SymmetricDifference will continue to return None once it first returns None.
-impl<'a> FusedIterator for SymmetricDifference<'a> {}
+impl<'a, const NBLOCK: usize> FusedIterator for SymmetricDifference<'a, NBLOCK> {}
 
 /// An iterator producing elements in the intersection of two sets.
 ///
-/// This struct is created by the [`FixedBitSet::intersection`] method.
-pub struct Intersection<'a> {
+/// This struct is created by the [`FixedBitSet<NBLOCK>::intersection`] method.
+pub struct Intersection<'a, const NBLOCK: usize> {
     iter: Ones<'a>,
-    other: &'a FixedBitSet,
+    other: &'a FixedBitSet<NBLOCK>,
 }
 
-impl<'a> Iterator for Intersection<'a> {
+impl<'a, const NBLOCK: usize> Iterator for Intersection<'a, NBLOCK> {
     type Item = usize; // the bit position of the '1'
 
     #[inline]
@@ -1169,7 +1086,7 @@ impl<'a> Iterator for Intersection<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for Intersection<'a> {
+impl<'a, const NBLOCK: usize> DoubleEndedIterator for Intersection<'a, NBLOCK> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .by_ref()
@@ -1179,16 +1096,16 @@ impl<'a> DoubleEndedIterator for Intersection<'a> {
 }
 
 // Intersection will continue to return None once it first returns None.
-impl<'a> FusedIterator for Intersection<'a> {}
+impl<'a, const NBLOCK: usize> FusedIterator for Intersection<'a, NBLOCK> {}
 
 /// An iterator producing elements in the union of two sets.
 ///
-/// This struct is created by the [`FixedBitSet::union`] method.
-pub struct Union<'a> {
-    iter: Chain<Ones<'a>, Difference<'a>>,
+/// This struct is created by the [`FixedBitSet<NBLOCK>::union`] method.
+pub struct Union<'a, const NBLOCK: usize> {
+    iter: Chain<Ones<'a>, Difference<'a, NBLOCK>>,
 }
 
-impl<'a> Iterator for Union<'a> {
+impl<'a, const NBLOCK: usize> Iterator for Union<'a, NBLOCK> {
     type Item = usize;
 
     #[inline]
@@ -1202,14 +1119,14 @@ impl<'a> Iterator for Union<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for Union<'a> {
+impl<'a, const NBLOCK: usize> DoubleEndedIterator for Union<'a, NBLOCK> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter.next_back()
     }
 }
 
 // Union will continue to return None once it first returns None.
-impl<'a> FusedIterator for Union<'a> {}
+impl<'a, const NBLOCK: usize> FusedIterator for Union<'a, NBLOCK> {}
 
 struct Masks {
     first_block: usize,
@@ -1225,7 +1142,7 @@ impl Masks {
         let end = range.end().unwrap_or(length);
         assert!(
             start <= end && end <= length,
-            "invalid range {}..{} for a fixedbitset of size {}",
+            "invalid range {}..{} for a FixedBitSet<NBLOCK> of size {}",
             start,
             end,
             length
@@ -1436,41 +1353,12 @@ impl<'a> Iterator for Zeroes<'a> {
 // Zeroes will stop returning Some when exhausted.
 impl<'a> FusedIterator for Zeroes<'a> {}
 
-impl Clone for FixedBitSet {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self::from_blocks_and_len(Vec::from(self.as_simd_slice()), self.length)
-    }
-
-    #[inline]
-    fn clone_from(&mut self, source: &Self) {
-        if self.length < source.length {
-            // SAFETY: `fill` is uninitialized, but is immediately initialized from `source`.
-            unsafe { self.grow_inner(source.length, MaybeUninit::uninit()) };
-        }
-        let me = self.as_mut_simd_slice_uninit();
-        let them = source.as_simd_slice_uninit();
-        match me.len().cmp(&them.len()) {
-            Ordering::Greater => {
-                let (head, tail) = me.split_at_mut(them.len());
-                head.copy_from_slice(them);
-                tail.fill(MaybeUninit::new(SimdBlock::NONE));
-            }
-            Ordering::Equal => me.copy_from_slice(them),
-            // The grow_inner above ensures that self is at least as large as source.
-            // so this branch is unreachable.
-            Ordering::Less => {}
-        }
-        self.length = source.length;
-    }
-}
-
 /// Return **true** if the bit is enabled in the bitset,
 /// or **false** otherwise.
 ///
 /// Note: bits outside the capacity are always disabled, and thus
 /// indexing a FixedBitSet will not panic.
-impl Index<usize> for FixedBitSet {
+impl<const NBLOCK: usize> Index<usize> for FixedBitSet<NBLOCK> {
     type Output = bool;
 
     #[inline]
@@ -1484,7 +1372,7 @@ impl Index<usize> for FixedBitSet {
 }
 
 /// Sets the bit at index **i** to **true** for each item **i** in the input **src**.
-impl Extend<usize> for FixedBitSet {
+impl<const NBLOCK: usize> Extend<usize> for FixedBitSet<NBLOCK> {
     fn extend<I: IntoIterator<Item = usize>>(&mut self, src: I) {
         let iter = src.into_iter();
         for i in iter {
@@ -1498,25 +1386,25 @@ impl Extend<usize> for FixedBitSet {
 
 /// Return a FixedBitSet containing bits set to **true** for every bit index in
 /// the iterator, other bits are set to **false**.
-impl FromIterator<usize> for FixedBitSet {
+impl<const NBLOCK: usize> FromIterator<usize> for FixedBitSet<NBLOCK> {
     fn from_iter<I: IntoIterator<Item = usize>>(src: I) -> Self {
-        let mut fbs = FixedBitSet::with_capacity(0);
+        let mut fbs = FixedBitSet::new();
         fbs.extend(src);
         fbs
     }
 }
 
-pub struct IntoOnes {
+pub struct IntoOnes<const N: usize> {
     bitset_front: Block,
     bitset_back: Block,
     block_idx_front: usize,
     block_idx_back: usize,
     remaining_blocks: core::iter::Copied<core::slice::Iter<'static, usize>>,
     // Keep buf along so that `remaining_blocks` remains valid.
-    _buf: Vec<SimdBlock>,
+    _buf: [SimdBlock; N],
 }
 
-impl IntoOnes {
+impl<const NBLOCK: usize> IntoOnes<NBLOCK> {
     #[inline]
     pub fn last_positive_bit_and_unset(n: &mut Block) -> usize {
         // Find the last set bit using x & -x
@@ -1544,7 +1432,7 @@ impl IntoOnes {
     }
 }
 
-impl DoubleEndedIterator for IntoOnes {
+impl<const NBLOCK: usize> DoubleEndedIterator for IntoOnes<NBLOCK> {
     fn next_back(&mut self) -> Option<Self::Item> {
         while self.bitset_back == 0 {
             match self.remaining_blocks.next_back() {
@@ -1575,7 +1463,7 @@ impl DoubleEndedIterator for IntoOnes {
     }
 }
 
-impl Iterator for IntoOnes {
+impl<const NBLOCK: usize> Iterator for IntoOnes<NBLOCK> {
     type Item = usize; // the bit position of the '1'
 
     #[inline]
@@ -1616,11 +1504,11 @@ impl Iterator for IntoOnes {
 }
 
 // Ones will continue to return None once it first returns None.
-impl FusedIterator for IntoOnes {}
+impl<const NBLOCK: usize> FusedIterator for IntoOnes<NBLOCK> {}
 
-impl<'a> BitAnd for &'a FixedBitSet {
-    type Output = FixedBitSet;
-    fn bitand(self, other: &FixedBitSet) -> FixedBitSet {
+impl<'a, const NBLOCK: usize> BitAnd for &'a FixedBitSet<NBLOCK> {
+    type Output = FixedBitSet<NBLOCK>;
+    fn bitand(self, other: &FixedBitSet<NBLOCK>) -> FixedBitSet<NBLOCK> {
         let (short, long) = {
             if self.len() <= other.len() {
                 (self.as_simd_slice(), other.as_simd_slice())
@@ -1637,21 +1525,21 @@ impl<'a> BitAnd for &'a FixedBitSet {
     }
 }
 
-impl BitAndAssign for FixedBitSet {
+impl<const NBLOCK: usize> BitAndAssign for FixedBitSet<NBLOCK> {
     fn bitand_assign(&mut self, other: Self) {
         self.intersect_with(&other);
     }
 }
 
-impl BitAndAssign<&Self> for FixedBitSet {
+impl<const NBLOCK: usize> BitAndAssign<&Self> for FixedBitSet<NBLOCK> {
     fn bitand_assign(&mut self, other: &Self) {
         self.intersect_with(other);
     }
 }
 
-impl<'a> BitOr for &'a FixedBitSet {
-    type Output = FixedBitSet;
-    fn bitor(self, other: &FixedBitSet) -> FixedBitSet {
+impl<'a, const NBLOCK: usize> BitOr for &'a FixedBitSet<NBLOCK> {
+    type Output = FixedBitSet<NBLOCK>;
+    fn bitor(self, other: &FixedBitSet<NBLOCK>) -> FixedBitSet<NBLOCK> {
         let (short, long) = {
             if self.len() <= other.len() {
                 (self.as_simd_slice(), other.as_simd_slice())
@@ -1668,21 +1556,21 @@ impl<'a> BitOr for &'a FixedBitSet {
     }
 }
 
-impl BitOrAssign for FixedBitSet {
+impl<const NBLOCK: usize> BitOrAssign for FixedBitSet<NBLOCK> {
     fn bitor_assign(&mut self, other: Self) {
         self.union_with(&other);
     }
 }
 
-impl BitOrAssign<&Self> for FixedBitSet {
+impl<const NBLOCK: usize> BitOrAssign<&Self> for FixedBitSet<NBLOCK> {
     fn bitor_assign(&mut self, other: &Self) {
         self.union_with(other);
     }
 }
 
-impl<'a> BitXor for &'a FixedBitSet {
-    type Output = FixedBitSet;
-    fn bitxor(self, other: &FixedBitSet) -> FixedBitSet {
+impl<'a, const NBLOCK: usize> BitXor for &'a FixedBitSet<NBLOCK> {
+    type Output = FixedBitSet<NBLOCK>;
+    fn bitxor(self, other: &FixedBitSet<NBLOCK>) -> FixedBitSet<NBLOCK> {
         let (short, long) = {
             if self.len() <= other.len() {
                 (self.as_simd_slice(), other.as_simd_slice())
@@ -1699,14 +1587,55 @@ impl<'a> BitXor for &'a FixedBitSet {
     }
 }
 
-impl BitXorAssign for FixedBitSet {
+impl<const NBLOCK: usize> BitXorAssign for FixedBitSet<NBLOCK> {
     fn bitxor_assign(&mut self, other: Self) {
         self.symmetric_difference_with(&other);
     }
 }
 
-impl BitXorAssign<&Self> for FixedBitSet {
+impl<const NBLOCK: usize> BitXorAssign<&Self> for FixedBitSet<NBLOCK> {
     fn bitxor_assign(&mut self, other: &Self) {
         self.symmetric_difference_with(other);
+    }
+}
+
+impl<const NBLOCK: usize> Hash for FixedBitSet<NBLOCK> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.length.hash(state);
+        self.as_simd_slice().hash(state);
+    }
+}
+
+impl<const NBLOCK: usize> PartialEq for FixedBitSet<NBLOCK> {
+    fn eq(&self, other: &Self) -> bool {
+        self.length == other.length && self.as_simd_slice().eq(other.as_simd_slice())
+    }
+}
+
+impl<const NBLOCK: usize> Clone for FixedBitSet<NBLOCK> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self::from_blocks_and_len(Vec::from(self.as_simd_slice()), self.length)
+    }
+
+    #[inline]
+    fn clone_from(&mut self, source: &Self) {
+        if self.length < source.length {
+            self.grow(source.length);
+        }
+        let me = self.as_mut_simd_slice();
+        let them = source.as_simd_slice();
+        match me.len().cmp(&them.len()) {
+            Ordering::Greater => {
+                let (head, tail) = me.split_at_mut(them.len());
+                head.copy_from_slice(them);
+                tail.fill(SimdBlock::NONE);
+            }
+            Ordering::Equal => me.copy_from_slice(them),
+            // The grow_inner above ensures that self is at least as large as source.
+            // so this branch is unreachable.
+            Ordering::Less => {}
+        }
+        self.length = source.length;
     }
 }
