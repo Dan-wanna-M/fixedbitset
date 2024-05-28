@@ -40,8 +40,14 @@ type SimdBlock = block::Block;
 pub type Block = usize;
 
 #[inline]
-fn div_rem(x: usize, denominator: usize) -> (usize, usize) {
+const fn div_rem(x: usize, denominator: usize) -> (usize, usize) {
     (x / denominator, x % denominator)
+}
+
+#[inline]
+pub const fn get_nblock(bits:usize) -> usize {
+    let (div, rem) = div_rem(bits, SimdBlock::BITS);
+    div + (rem > 0) as usize
 }
 
 /// `FixedBitSet` is a simple fixed size set of bits that each can
@@ -72,8 +78,7 @@ impl<const NBLOCK: usize> FixedBitSet<NBLOCK> {
     /// Create a new **FixedBitSet** with a specific number of bits,
     /// all initially clear.
     pub fn with_capacity(bits: usize) -> Self {
-        let (mut blocks, rem) = div_rem(bits, SimdBlock::BITS);
-        blocks += (rem > 0) as usize;
+        let blocks = get_nblock(bits);
         Self::from_blocks_and_len(vec![SimdBlock::NONE; blocks], bits)
     }
 

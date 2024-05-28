@@ -1,4 +1,4 @@
-use fixedbitset::{on_stack::FixedBitSet, Block, SimdBlock};
+use fixedbitset::{on_stack::{get_nblock, FixedBitSet}, Block, SimdBlock};
 #[cfg(target_family = "wasm")]
 use wasm_bindgen_test::*;
 #[cfg(target_family = "wasm")]
@@ -11,8 +11,8 @@ const BITS: usize = core::mem::size_of::<Block>() * 8;
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
 fn it_works() {
     const N: usize = 50;
-    const NBLOCK: usize = N / SimdBlock::BITS + 1;
-    let mut fb: FixedBitSet<NBLOCK> = FixedBitSet::with_capacity(N);
+    const NBLOCK: usize = get_nblock(N);
+    let mut fb: FixedBitSet<{NBLOCK}> = FixedBitSet::with_capacity(N);
 
     for i in 0..(N + 10) {
         assert!(!fb.contains(i));
