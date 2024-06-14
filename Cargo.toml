@@ -1,15 +1,14 @@
 [package]
-name = "fixedbitset"
+name = "fixedbitset-stack"
 version = "0.5.7"
-authors = ["bluss"]
+authors = ["Xintong Sun <xs28@rice.edu>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-rust-version = "1.56"
 edition = "2021"
 
-description = "FixedBitSet is a simple bitset collection"
-documentation = "https://docs.rs/fixedbitset/"
-repository = "https://github.com/petgraph/fixedbitset"
+description = "A forked version of FixedBitSet that supports const generics "
+documentation = "https://docs.rs/fixedbitset-stack/"
+repository = "https://github.com/Dan-wanna-M/fixedbitset"
 
 keywords = ["container", "data-structure", "bitvec", "bitset", "no_std"]
 categories = ["data-structures"]

@@ -1,4 +1,4 @@
-use fixedbitset::*;
+use fixedbitset_stack::*;
 
 #[cfg(target_family = "wasm")]
 use wasm_bindgen_test::*;

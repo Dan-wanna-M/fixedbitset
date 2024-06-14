@@ -1,4 +1,4 @@
-use fixedbitset::{on_stack::{get_nblock, FixedBitSet}, Block, SimdBlock};
+use fixedbitset_stack::{on_stack::{get_nblock, FixedBitSet}, Block, SimdBlock};
 #[cfg(target_family = "wasm")]
 use wasm_bindgen_test::*;
 #[cfg(target_family = "wasm")]
